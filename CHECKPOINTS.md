@@ -61,3 +61,39 @@
 - **Sản phẩm:** repo đúng tên, link đã nộp trên LMS.
 - **Cần hiểu:** kết quả cải tiến của bạn và giới hạn của nó.
 - **Tự kiểm tra:** đi hết checklist trong [SUBMISSION.md](SUBMISSION.md).
+
+<!-- LOCAL_PROGRESS_START -->
+## Tiến độ thực tế của bài làm
+
+Cập nhật: 2026-11-12 07:13:31 GMT+7. Bảng này bổ sung tiến độ; các yêu cầu CP1–CP7 ở trên giữ nguyên.
+
+| Checkpoint | Tiến độ | Bằng chứng / việc còn lại |
+|---|---|---|
+| CP1 | Đã làm | Hai status tools đã chạy; .env được bỏ qua bởi Git. Remote đúng mẫu tên; GitHub API không đăng nhập trả private=false (11/11/2026). Chưa push commit mới. |
+| CP2 | Đã làm | agent.py có vòng model → tool → model; các case đã scored có câu trả lời và trace thật. |
+| CP3 | Đã làm | Xử lý JSON lỗi, mọi tool call/ID, max_steps, lỗi provider, finish bất thường và trace. Lần kiểm tra offline gần nhất: 57 tests pass. |
+| CP4 | Đã làm | eval_before.json đủ 22/22, điểm 88.41/100. Đã chọn lỗi H7 = 50 và A1 = 0 để phân tích. |
+| CP5 | Đã làm | Prompt xử lý timeout/yêu cầu bịa, gate URL, kiểm tra finish. NOTES mục 1–3 có evidence thật. |
+| CP6 | Đã có kết quả; cần đọc lại | Đã có 22/22 case, điểm tổng 92.68/100; mục 4 NOTES đã cập nhật. Cần đọc lại trước khi nộp. |
+| CP7 | Đã chuẩn bị demo; chưa nộp | NOTES có kịch bản demo E4/H7 và giải thích loop. Chưa xác nhận demo trực tiếp, push commit mới hoặc nộp LMS. |
+
+### Việc cần chốt
+
+- [x] Hai report đã chấm đủ 22/22 và có điểm tổng.
+- [x] Hai report có cùng provider, agent model, judge model, max_steps và dataset.
+- [x] NOTES đã có đủ 5 mục; phần so sánh phân biệt rõ kết quả đủ bộ và kết quả đang chờ.
+- [x] Lần kiểm tra offline gần nhất: 57 tests pass; fixtures/cases/scenarios/grading/rubric không được sửa để tăng điểm.
+- [x] Git không track .env; tên repo/remote đúng mẫu L3B.
+- [ ] Đọc lại NOTES và kết quả; giải thích được code và trace khi demo.
+- [x] Repo public: GitHub API không đăng nhập xác nhận private=false ngày 11/11/2026.
+- [ ] Commit/push phần hoàn chỉnh và nộp link LMS.
+
+Không cần làm bonus để hoàn thành bài chính. Không đánh dấu đã push hoặc đã nộp khi chưa có bằng chứng.
+<!-- LOCAL_PROGRESS_END -->
+
+## Mốc nộp đã xác nhận
+
+- Hạn nộp người học xác nhận: **12:00 trưa ngày 12/11/2026, giờ Việt Nam**.
+- Mốc dự kiến đọc lại và chuẩn bị commit/push, nộp LMS: trước 11:30; không chờ đến sát 12:00 mới chuẩn bị.
+- Tiếp tục lượt eval nền với cấu hình cũ và giữ nguyên điểm đã chấm.
+- Nếu chưa đủ 22 case khi chốt nộp, báo đúng số case/giới hạn HTTP 429 và để điểm tổng null; không điền điểm giả hoặc dùng partial_mean làm điểm tổng.

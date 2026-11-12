@@ -7,10 +7,24 @@ from pathlib import Path
 import sys
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from agent import run_agent
-from providers import Provider
+from providers import CONFIG, Provider, load_env
 from scenarios import ScenarioTools
 from grading import grade_case, summarize, bonus_points
 from bonus.tools import BonusTools
+
+
+def _grade_result(case, result, args):
+    try:
+        judge = Provider(args.judge_provider, args.judge_model)
+        grade = grade_case(case, result, judge)
+    except Exception as exc:
+        grade = {'score': None, 'status': 'unscored', 'reason': str(exc), 'judge_usage': {}}
+    return grade
+
+
+def regrade_case(case, args, previous):
+    """Retry the judge without rerunning a completed agent trajectory."""
+    return {**previous, 'grade': _grade_result(case, previous['result'], args)}
 
 
 def run_case(case, args):
@@ -21,19 +35,16 @@ def run_case(case, args):
         result = {'status': 'error', 'answer': '', 'trace': [], 'usage': [], 'error': f'{type(exc).__name__}: {str(exc)[:200]}'}
     if not isinstance(result, dict) or not isinstance(result.get('trace', []), list):
         result = {'status': 'error', 'answer': '', 'trace': [], 'usage': [], 'error': 'run_agent trả kết quả không hợp lệ.'}
-    try:
-        judge = Provider(args.judge_provider, args.judge_model)
-        grade = grade_case(case, result, judge)
-    except Exception as exc:
-        grade = {'score': None, 'status': 'unscored', 'reason': str(exc), 'judge_usage': {}}
+    grade = _grade_result(case, result, args)
     return {'id': case['id'], 'question': case['question'], 'expected': case['expected'],
             'scenario': case.get('scenario', 'normal'), 'provider': args.provider, 'model': args.model,
             'judge_provider': args.judge_provider, 'judge_model': args.judge_model, 'result': result, 'grade': grade}
 
 
 def main():
+    load_env()
     parser = argparse.ArgumentParser(description='Chạy agent và chấm eval 0–100')
-    choices = ['openai', 'gemini', 'anthropic', 'openrouter']
+    choices = list(CONFIG)
     parser.add_argument('--provider', choices=choices, default=os.getenv('PROVIDER', 'openai'))
     parser.add_argument('--model', default=os.getenv('MODEL'))
     parser.add_argument('--judge-provider', choices=choices, default=os.getenv('JUDGE_PROVIDER'))
@@ -43,6 +54,7 @@ def main():
     parser.add_argument('--max-steps', type=int, default=None, help='Giới hạn model calls mỗi case: mặc định 8, bonus 16')
     parser.add_argument('--workers', type=int, default=1, help='Số case chạy đồng thời (mặc định 1)')
     parser.add_argument('--output', default='eval_results.json')
+    parser.add_argument('--resume', action='store_true', help='Reuse scored cases in the output file; rerun only unscored cases')
     args = parser.parse_args()
     args.judge_provider = args.judge_provider or args.provider
     args.judge_model = args.judge_model or args.model
@@ -56,22 +68,67 @@ def main():
     selected = [c for c in cases if not args.case or c['id'] == args.case.upper()]
     if not selected:
         parser.error('Không tìm thấy case')
+    config = {'provider': args.provider, 'model': args.model,
+              'judge_provider': args.judge_provider, 'judge_model': args.judge_model,
+              'max_steps': args.max_steps, 'dataset': 'bonus' if args.bonus else 'core'}
+    by_id = {}
+    previous_by_id = {}
+    if args.resume:
+        try:
+            previous = json.loads(Path(args.output).read_text(encoding='utf-8'))
+        except (OSError, ValueError):
+            parser.error('--resume requires an existing valid output JSON file')
+        if not isinstance(previous, dict) or previous.get('config') != config:
+            parser.error('--resume requires exactly the same provider, models, max steps and dataset')
+        stored = previous.get('cases', [])
+        if (not isinstance(stored, list) or
+                any(not isinstance(item, dict) for item in stored) or
+                len(stored) != len(selected) or
+                {item.get('id') for item in stored} != {case['id'] for case in selected}):
+            parser.error('--resume requires the same complete set of case IDs')
+        previous_by_id = {item['id']: item for item in stored}
+        by_id = {item['id']: item for item in stored
+                 if item.get('grade', {}).get('status') == 'scored'
+                 and item['grade'].get('score') is not None}
+        print(f'Reusing {len(by_id)} scored cases; their answers, traces and scores stay unchanged.', flush=True)
+    pending = [case for case in selected if case['id'] not in by_id]
+
     def run_and_print(case):
         print(f"Đang chạy {case['id']}", flush=True)
-        item = run_case(case, args)
+        previous_item = previous_by_id.get(case['id'])
+        if previous_item and previous_item.get('result', {}).get('status') == 'completed':
+            print(f"Regrading saved answer for {case['id']}; no new agent calls.", flush=True)
+            item = regrade_case(case, args, previous_item)
+        else:
+            item = run_case(case, args)
         print(f"{case['id']}: {item['grade'].get('score')} ({item['grade']['status']})", flush=True)
         return item
+    def save_report():
+        results = [by_id.get(case['id']) or previous_by_id.get(case['id']) or {
+            'id': case['id'], 'question': case['question'],
+            'expected': case['expected'],
+            'result': {'status': 'pending', 'answer': '', 'trace': [], 'usage': []},
+            'grade': {'status': 'unscored', 'score': None, 'reason': 'Not run yet.'},
+        } for case in selected]
+        report = {'summary': summarize(results), 'config': config, 'cases': results}
+        if args.bonus:
+            full_run = not args.case and len(selected) == len(cases)
+            report['summary']['bonus_points_0_15'] = bonus_points(
+                report['summary']['score_0_100'], full_run)
+        output = Path(args.output)
+        temporary = output.with_name(output.name + '.tmp')
+        temporary.write_text(json.dumps(report, ensure_ascii=False, indent=2) + '\n', encoding='utf-8')
+        temporary.replace(output)
+        return report
+
     with ThreadPoolExecutor(max_workers=args.workers) as pool:
-        results = list(pool.map(run_and_print, selected))
-    report = {'summary': summarize(results), 'config': {'provider': args.provider, 'model': args.model,
-              'judge_provider': args.judge_provider, 'judge_model': args.judge_model, 'max_steps': args.max_steps,
-              'dataset': 'bonus' if args.bonus else 'core'}, 'cases': results}
+        for item in pool.map(run_and_print, pending):
+            by_id[item['id']] = item
+            save_report()
+    report = save_report()
     summary = report['summary']
     if args.bonus:
-        full_run = not args.case and len(selected) == len(cases)
-        report['summary']['bonus_points_0_15'] = bonus_points(summary['score_0_100'], full_run)
-        print(f"Điểm bonus tham khảo: {summary['bonus_points_0_15']}/15 (chỉ tính khi chấm đủ toàn bộ case).")
-    Path(args.output).write_text(json.dumps(report, ensure_ascii=False, indent=2) + '\n', encoding='utf-8')
+        print(f"Bonus: {summary['bonus_points_0_15']}/15")
     print(f"Điểm: {summary['score_0_100']}/100; đã chấm {summary['scored_cases']}/{summary['total_cases']} case. File: {args.output}")
     if summary['score_0_100'] is None:
         print('Chưa có điểm tổng do có case chưa được chấm; xem reason trong file.', file=sys.stderr)

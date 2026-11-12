@@ -1,10 +1,39 @@
-"""Bốn provider cùng một interface. Không chứa agent loop."""
+"""Các provider cùng một interface. Không chứa agent loop."""
 import json
 import os
+from pathlib import Path
+import math
+import sys
+import threading
+import time
 import urllib.error
 import urllib.request
 
+
+def load_env(path=None):
+    """Read simple .env assignments; existing process variables take priority."""
+    env_path = Path(path) if path is not None else Path(__file__).resolve().parent / '.env'
+    if not env_path.is_file():
+        return
+    for raw in env_path.read_text(encoding='utf-8-sig').splitlines():
+        line = raw.strip()
+        if not line or line.startswith('#'):
+            continue
+        if line.startswith('export '):
+            line = line[7:].lstrip()
+        name, separator, value = line.partition('=')
+        name, value = name.strip(), value.strip()
+        if not separator or not name:
+            continue
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in ("'", '"'):
+            value = value[1:-1]
+        else:
+            value = value.split(' #', 1)[0].rstrip()
+        os.environ.setdefault(name, value)
+
+
 CONFIG = {
+    'groq': ('GROQ_API_KEY', 'https://api.groq.com/openai/v1/chat/completions'),
     'openai': ('OPENAI_API_KEY', 'https://api.openai.com/v1/chat/completions'),
     'gemini': ('GEMINI_API_KEY', 'https://generativelanguage.googleapis.com/v1beta/openai/chat/completions'),
     'openrouter': ('OPENROUTER_API_KEY', 'https://openrouter.ai/api/v1/chat/completions'),
@@ -12,16 +41,79 @@ CONFIG = {
 }
 
 
-def post_json(url, headers, payload):
-    req = urllib.request.Request(url, data=json.dumps(payload).encode(), headers={'Content-Type': 'application/json', **headers})
+
+_GROQ_SCHEDULE = {}
+_GROQ_LOCK = threading.Lock()
+_GROQ_MAX_RETRIES = 4
+_GROQ_RETRY_BUDGET = 180.0
+
+
+def _wait_for_groq(slot, interval):
+    # All Provider instances, including the judge, share the same schedule.
+    with _GROQ_LOCK:
+        delay = max(0.0, _GROQ_SCHEDULE.get(slot, 0.0) - time.monotonic())
+        if delay:
+            time.sleep(delay)
+        _GROQ_SCHEDULE[slot] = time.monotonic() + interval
+
+
+def _defer_groq(slot, delay):
+    with _GROQ_LOCK:
+        _GROQ_SCHEDULE[slot] = max(
+            _GROQ_SCHEDULE.get(slot, 0.0), time.monotonic() + delay)
+
+
+def _retry_delay(headers, attempt):
+    value = headers.get('Retry-After') if headers else None
     try:
-        with urllib.request.urlopen(req, timeout=60) as response:
-            return json.load(response)
-    except urllib.error.HTTPError as exc:
-        # Do not print response bodies: they may contain account or request data.
-        raise RuntimeError(f'Provider trả HTTP {exc.code}; kiểm tra model, key và quota.') from exc
-    except urllib.error.URLError as exc:
-        raise RuntimeError(f'Không kết nối được provider: {exc.reason}') from exc
+        delay = float(value)
+        if math.isfinite(delay) and delay >= 0:
+            return delay
+    except (TypeError, ValueError):
+        pass
+    return min(30.0 * (2 ** attempt), 60.0)
+
+
+def post_json(url, headers, payload):
+    is_groq = url.startswith('https://api.groq.com/')
+    interval = float(os.getenv('GROQ_MIN_INTERVAL', '3')) if is_groq else 0.0
+    if not math.isfinite(interval) or interval < 0:
+        raise ValueError('GROQ_MIN_INTERVAL must be a finite number >= 0.')
+    slot = (url, payload.get('model'))
+    budget = float(os.getenv('GROQ_RETRY_BUDGET', str(_GROQ_RETRY_BUDGET))) if is_groq else _GROQ_RETRY_BUDGET
+    if not math.isfinite(budget) or budget <= 0:
+        raise ValueError('GROQ_RETRY_BUDGET must be a finite number > 0.')
+    deadline = time.monotonic() + budget
+    retries = _GROQ_MAX_RETRIES if is_groq else 0
+    req = urllib.request.Request(
+        url, data=json.dumps(payload).encode(),
+        headers={'Content-Type': 'application/json',
+                 'User-Agent': 'StatusAgentLab/1.0', **headers})
+    for attempt in range(retries + 1):
+        if is_groq:
+            _wait_for_groq(slot, interval)
+        try:
+            with urllib.request.urlopen(req, timeout=60) as response:
+                return json.load(response)
+        except urllib.error.HTTPError as exc:
+            if is_groq and exc.code == 429 and attempt < retries:
+                delay = _retry_delay(exc.headers, attempt)
+                if time.monotonic() + delay <= deadline:
+                    exc.close()
+                    print(
+                        f'Groq HTTP 429: waiting {delay:.1f}s before retry '
+                        f'{attempt + 1}/{retries}.',
+                        file=sys.stderr, flush=True)
+                    _defer_groq(slot, delay)
+                    continue
+            # Do not print response bodies, account identifiers, or API keys.
+            raise RuntimeError(
+                f'Provider tra HTTP {exc.code}; kiem tra model, key va quota.'
+            ) from exc
+        except urllib.error.URLError as exc:
+            raise RuntimeError(
+                f'Khong ket noi duoc provider: {exc.reason}.'
+            ) from exc
 
 
 class Provider:

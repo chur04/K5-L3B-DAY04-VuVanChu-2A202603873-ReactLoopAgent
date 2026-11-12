@@ -42,7 +42,7 @@ Sau bài chính, bạn có thể mở rộng agent để điều tra **GitHub, C
 
 ## 1. Chuẩn bị
 
-- Python **3.10+**, có Internet và API key của **một** trong bốn provider.
+- Python **3.10+**, có Internet và API key của **một** trong năm provider.
 - Chọn model có hỗ trợ **tool calling**. API provider/model có thể phát sinh chi phí.
 - Không cần cài package: project dùng Python standard library.
 
@@ -59,14 +59,15 @@ Chọn cấu hình khác nếu cần:
 
 | `PROVIDER` | Biến chứa key | `MODEL` |
 |---|---|---|
+| `groq` | `GROQ_API_KEY` | Ví dụ `openai/gpt-oss-20b`, có tool calling. |
 | `openai` | `OPENAI_API_KEY` | Tên model OpenAI bạn được cấp quyền dùng. |
 | `gemini` | `GEMINI_API_KEY` | Tên model Gemini hỗ trợ function calling. |
 | `anthropic` | `ANTHROPIC_API_KEY` | Tên model Claude hỗ trợ tool use. |
 | `openrouter` | `OPENROUTER_API_KEY` | Model ID đầy đủ trên OpenRouter, thường có dạng provider/model. |
 
-Ví dụ chuyển sang Gemini: `export PROVIDER=gemini`, đặt `GEMINI_API_KEY` và `MODEL` phù hợp. Chọn một provider; không cần cả bốn key. File `.env.example` chỉ là mẫu: chương trình **không tự đọc `.env`**. Có thể chạy `cp .env.example .env`, điền key rồi chạy `source .env` trong mỗi terminal mới. Trên Windows, dùng Git Bash để chạy đúng các lệnh này, hoặc thay `python3` bằng `python` và đặt biến bằng `$env:TEN_BIEN='gia_tri'` trong PowerShell. Không commit key hay trace chứa dữ liệu nhạy cảm.
+Ví dụ chuyển sang Gemini: `export PROVIDER=gemini`, đặt `GEMINI_API_KEY` và `MODEL` phù hợp. Chọn một provider; không cần cả năm key. Chương trình tự đọc `.env` trong thư mục project khi chạy run.py hoặc evals/run_evals.py; biến đã đặt trong terminal được ưu tiên. Sao chép .env.example thành .env, chọn provider/model và điền key. Với Groq, dùng PROVIDER=groq, MODEL=openai/gpt-oss-20b, GROQ_API_KEY=<key>. Có thể dùng --provider groq --model openai/gpt-oss-20b để ghi đè cấu hình cũ trong terminal. Không commit key hay trace chứa dữ liệu nhạy cảm.
 
-Adapter dùng Chat Completions cho OpenAI, Gemini compatibility và OpenRouter; Anthropic dùng Messages API. Nó phục vụ **tool calling cơ bản**, không bao phủ mọi tính năng đặc thù model như extended thinking. Khi provider từ chối model hoặc hết quota, kiểm tra quyền truy cập, model ID và key. Xem tài liệu: [OpenAI](https://developers.openai.com/api/docs/guides/function-calling), [Gemini](https://ai.google.dev/gemini-api/docs/openai), [Anthropic](https://platform.claude.com/docs/en/agents-and-tools/tool-use/how-tool-use-works), [OpenRouter](https://openrouter.ai/docs/guides/features/tool-calling).
+Adapter dùng Chat Completions cho Groq, OpenAI, Gemini compatibility và OpenRouter; Anthropic dùng Messages API. Nó phục vụ **tool calling cơ bản**, không bao phủ mọi tính năng đặc thù model như extended thinking. Khi provider từ chối model hoặc hết quota, kiểm tra quyền truy cập, model ID và key. Xem tài liệu: [OpenAI](https://developers.openai.com/api/docs/guides/function-calling), [Gemini](https://ai.google.dev/gemini-api/docs/openai), [Anthropic](https://platform.claude.com/docs/en/agents-and-tools/tool-use/how-tool-use-works), [OpenRouter](https://openrouter.ai/docs/guides/features/tool-calling).
 
 ## 2. Chạy thử
 
@@ -106,3 +107,36 @@ Trong bài lab, *agent loop* là vòng LLM → tool → kết quả. Khi dùng c
 | Thiết kế môi trường | [OpenAI: Harness engineering](https://openai.com/index/harness-engineering/) | Vai trò của tests, feedback và môi trường khi giao công việc cho coding agent. |
 
 Nếu thử workflow tự động, hãy đặt giới hạn lượt chạy hoặc chi phí, có điều kiện dừng và tự kiểm tra kết quả. Tests pass là bằng chứng hữu ích, nhưng vẫn cần xem code và đối chiếu yêu cầu. Đọc kỹ quyền và hướng dẫn của từng công cụ trước khi cài hoặc chạy plugin/hook.
+
+## Groq rate limits
+
+Groq requests from both the agent and judge share a minimum interval of 3 seconds.
+Set GROQ_MIN_INTERVAL in .env to adjust it. HTTP 429 is retried at most four times
+using Retry-After, or bounded backoff when the header is absent. The default retry budget
+is 180 seconds per API request; set GROQ_RETRY_BUDGET to allow longer waits.
+Delays beyond that budget stop rather than retrying early.
+Keep workers at 1 on a free account. A completed run still needs to be checked
+for unscored cases; pacing does not increase daily or per-request limits.
+
+## Theo dõi eval và ghi chú
+
+Lượt chạy nền hiện tại giữ nguyên model và cấu hình trước/sau. Không khởi động
+thêm một lượt ghi cùng eval_after.json khi lượt cũ còn chạy.
+
+- evals/continue_evals.ps1 chờ PID của lượt đang chạy rồi tiếp tục bằng --resume
+  nếu còn case chưa chấm. Mỗi lượt chỉ xử lý case chưa scored; câu trả lời đã
+  completed được chấm lại bằng judge nếu cần. Script dừng khi đủ 22/22, hoặc khi
+  phát hiện cấu hình không khớp hay lỗi xác thực API.
+- evals/update_notes.py chỉ đọc report và cập nhật vùng có marker trong NOTES.md,
+  cùng bảng tiến độ bổ sung ở CHECKPOINTS.md. Script không gọi API và không sửa
+  file eval. Chạy với --watch để cập nhật khi report thay đổi, rồi tự dừng khi đủ
+  22 case được chấm. Phần phân tích ngoài marker được giữ nguyên.
+- Mặc định GROQ_RETRY_BUDGET là 180 giây/request. Có thể đặt giá trị lớn hơn để
+  chờ theo Retry-After; thời gian chờ dài hơn không làm tăng quota. Lượt nền này
+  đặt budget 7200 giây/request và GROQ_MIN_INTERVAL=10 chỉ trong process.
+- Tiến độ, thông báo chờ và cập nhật ghi chú nằm ở các file eval_resume*.log;
+  các lượt tiếp tục có log riêng trong eval_results_resume/. Chúng được Git
+  bỏ qua cùng .env. Kết quả chính vẫn là eval_before.json và eval_after.json.
+
+Dù ghi chú được cập nhật tự động, vẫn cần đọc lại kết quả, hiểu trace để demo,
+kiểm tra repo public, push phần hoàn chỉnh và tự nộp link LMS.
